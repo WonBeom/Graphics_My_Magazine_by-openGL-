@@ -1,0 +1,563 @@
+﻿<html> <head>
+<title>WebGL Texture Sample</title>
+<meta http-equiv="content-type" content="text/html; charset=ISO-8859-1">
+
+<script type="text/javascript" src="gl-matrix.js"></script>
+<script type="text/javascript" src="webgl-utils.js"></script>
+<script type="text/javascript" src="data.js" ></script>
+
+
+<script id="shader-fs" type="x-shader/x-fragment">
+    /* fragment-shader */
+    precision mediump float;
+    varying vec2 v_texcoord;    
+
+    uniform sampler2D texid;
+
+    void main(void) {
+        gl_FragColor = texture2D(texid, v_texcoord);
+    }
+</script>
+
+<script id="shader-vs" type="x-shader/x-vertex">
+/* vertex-shader */
+    attribute vec3 a_vertex;
+    attribute vec2 a_texcoord;
+
+    uniform mat4 mvp_matrix;
+    uniform mat4 tex_matrix;
+
+    varying vec2 v_texcoord;
+
+    void main(void) {
+        gl_Position = mvp_matrix * vec4(a_vertex, 1.0); // vertex의 Position 계산
+        
+        v_texcoord = vec2(tex_matrix * vec4(a_texcoord, 0.0, 1.0)); // texture Position 계산
+    }
+</script>
+<script type="text/javascript">
+
+    const FRAME_NUM = 15; // 프레임 개수
+    const LAYER_NUM = 6;  // 레이어 개수
+
+    var gl;
+    function initGL(canvas) {
+
+        /* webgl 초기화 */
+        try {
+            gl = canvas.getContext("experimental-webgl");
+            gl.viewportWidth = canvas.width;
+            gl.viewportHeight = canvas.height;
+        } catch (e) {
+
+        }
+        if (!gl) {
+            alert("Could not initialize WebGL, sorry :-(");
+        }
+
+        /* 마우스 function들 초기화 (핸들러 전달) */
+        canvas.onmousedown = handleMouseDown;
+        canvas.onmouseup = handleMouseUp;
+        canvas.onmousemove = handleMouseMove;
+        canvas.onmousewheel = handleMouseWheel;
+        document.onkeydown = handleKeyDown;
+    }
+
+    function getShader(gl, id) {
+        var shaderScript = document.getElementById(id); // id 파일 불러오기
+        if (!shaderScript) { // 불러오지 못했을 때. (파일이 존재하지 않거나 등..)
+            return null;
+        }
+
+        var str = "";
+        var k = shaderScript.firstChild;
+        while (k) {
+            if (k.nodeType == 3) {
+                str += k.textContent;
+            }
+            k = k.nextSibling;
+        }
+
+        /* shaderScript의 type에 따라 fragment-shader 또는 vertex-shader 만듦 */
+        var shader;
+        if (shaderScript.type == "x-shader/x-fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+        } else if (shaderScript.type == "x-shader/x-vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+        } else {
+            return null;
+        }
+
+        gl.shaderSource(shader, str); // shader에 불러온 파일 소스를 올림?
+        gl.compileShader(shader);     // 올린 shader소스를 컴파일
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) { // 컴파일 실패
+            alert(gl.getShaderInfoLog(shader));
+            return null;
+        }
+
+        return shader; // 컴파일 된 shader return
+    }
+
+    var shaderProgram;
+    var texture_matrix_loc; // texture_matrix의 location
+    function initShaders() {
+        /* fragment-shader와 vertex-shader를 컴파일 */
+        var fragmentShader = getShader(gl, "shader-fs");
+        var vertexShader = getShader(gl, "shader-vs");
+
+        shaderProgram = gl.createProgram(); // 프로그램 생성
+        gl.attachShader(shaderProgram, vertexShader); // vertex-shader를 shaderProgram에 올림
+        gl.attachShader(shaderProgram, fragmentShader); // fragmentshader를 shaderProgram에 올림
+        gl.linkProgram(shaderProgram); // 올린 두 shader를 연결
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) { // link 실패
+            alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderProgram); // shaderProgram 사용
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "a_vertex"); // a_vertex의 location을 가져온다.
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute); // 가져온 a_vertex를 enable
+
+        shaderProgram.textureCoordAttribute = gl.getAttribLocation(shaderProgram, "a_texcoord"); // a_texcoord의 location을 가져온다.
+        gl.enableVertexAttribArray(shaderProgram.textureCoordAttribute); // 가져온 a_texcoord를 enable
+
+        shaderProgram.mvp_matrix_loc = gl.getUniformLocation(shaderProgram, "mvp_matrix"); // uniform mvp_matrix의 location을 가져온다
+        shaderProgram.texid_loc = gl.getUniformLocation(shaderProgram, "texid"); // uniform sampler2D texid의 location을 가져온다
+
+        texture_matrix_loc = gl.getUniformLocation(shaderProgram, "tex_matrix"); // uniform texture_matrix의 location을 가져온다.
+    }
+
+    function handleLoadedTexture(texture) {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); // texture의 위 아래를 뒤집어 준다.
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image); // 이미지를 버퍼에 올린다.
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); // FILTER 설정
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.bindTexture(gl.TEXTURE_2D, null); 
+    }
+
+    var texture_id = new Array(FRAME_NUM);
+    var back_texture;
+    var tex_idx=0;
+    function initTexture() {
+        for (var i = 0; i < FRAME_NUM; i++) {
+            texture_id[i] = gl.createTexture(); // 텍스쳐 객체 생성
+            texture_id[i].image = new Image();  // 이미지 객체 생성
+            texture_id[i].image.onload = function () {
+                handleLoadedTexture(texture_id[tex_idx]);
+                
+                if (++tex_idx == FRAME_NUM)
+                    tex_idx = 0;
+            }
+
+            texture_id[i].image.src = filename[i]; // 이미지 소스 로드
+        }
+
+        back_texture = gl.createTexture(); // background 텍스쳐 생성
+        back_texture.image = new Image();
+        back_texture.image.onload = function () {
+            handleLoadedTexture(back_texture);
+        }
+
+        back_texture.image.src = "back.png";
+    }
+
+    var backBuffer = new Array(LAYER_NUM);
+    var frameBuffer = new Array(FRAME_NUM);
+    var texBuffer = new Array(FRAME_NUM);;
+    var indexBuffer
+    function initBuffers() {
+        for(var i=0; i<LAYER_NUM; i++)
+        {
+            backBuffer[i] = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, backBuffer[i]); // 서버에 버퍼를 올림
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(back_vertices), gl.STATIC_DRAW); // 올린 버퍼의 데이터 변경
+            backBuffer[i].numItems = 4;
+
+            // carculate depth, 레이어마다 background 만듦
+            for (var j = 2; j < 24; j += 3)
+                back_vertices[j] -= 1;
+        }
+
+        for (var i = 0; i < FRAME_NUM; i++) {
+            frameBuffer[i] = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, frameBuffer[i]); // 서버에 버퍼를 올림
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(frame_vertices[i]), gl.STATIC_DRAW); // 올린 버퍼의 데이터 변경
+            frameBuffer[i].numItems = 4; // 점의 개수
+
+            texBuffer[i] = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer[i]);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texcoord[i]), gl.STATIC_DRAW);
+            texBuffer.numItems = 4;
+        }
+
+        indexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+        indexBuffer.numItems = 6;
+    }
+
+    var bollmove = [0, 0];
+    var random = [0.005, 0.01];
+    var back = [false, false];
+    var move = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    function textureTransform(type) {
+
+        if (up_dr[type]) { // up방향이 1일 때
+            move[type] += 0.001; // 텍스쳐가 위로 올라가면 프레임으로 볼때는 내려오는 것 처럼 보인다.
+            if ((texcoord[type][5] + move[type] >= 1) || (texcoord[type][7] + move[type] >= 1)) { // texture의 y좌표+move가 1보다 커지면
+                up_dr[type] = 0; // up방향을 끄고 
+                dw_dr[type] = 1; // down 방향으로
+            }
+            mat4.translate(tex_matrix, tex_matrix, [0, move[type], 0]); // texture의 y좌표를 move만큼 이동
+        } else if (dw_dr[type]) { // down 방향일 때
+            move[type] -= 0.001; // 텍스쳐가 내려오면 프레임으로 볼때는 올라오는 것 처럼 보인다.
+            if ((texcoord[type][1] + move[type] <= 0) || (texcoord[type][3] + move[type] <= 0)) {// texture의 y좌표+move가 0보다 작아지면
+                up_dr[type] = 1; // up방향을 키고
+                dw_dr[type] = 0; // down방향을 끈다
+            }
+            mat4.translate(tex_matrix, tex_matrix, [0, move[type], 0]); // 이동
+        } else if (r_dr[type]) {
+            move[type] += 0.001;
+            if ((texcoord[type][2] + move[type] >= 1) || (texcoord[type][4] + move[type] >= 1)) {
+                r_dr[type] = 0;
+                l_dr[type] = 1;
+            }
+            mat4.translate(tex_matrix, tex_matrix, [move[type], 0, 0]);
+        } else if (l_dr[type]) {
+            move[type] -= 0.001;
+            if ((texcoord[type][0] + move[type] <= 0) || (texcoord[type][6] + move[type] <= 0)) {
+                r_dr[type] = 1;
+                l_dr[type] = 0;
+            }
+            mat4.translate(tex_matrix, tex_matrix, [move[type], 0, 0]); // texture의 x좌표를 move만큼 이동
+        }
+
+        if (type == 9) {
+            bollmove[0] -= random[0]; // 빼지는 값이 계속 바뀐다 (벽에 부딪힐 때 마다)
+            bollmove[1] += random[1]; // 더해지는 값이 계속 바뀐다.
+
+            var transX = bollmove[0]; // 이동할 x값
+            var transY = bollmove[1]; // 이동할 y값
+
+
+            if (bollmove[0] + texcoord[type][0] < 0.2) { // 0.2보다 작아지면 
+                if (!back[0]) { // 벽에 부딪혔을 때 x의 랜덤 수 생성 (0.002~0.01)
+                    random[0] = Math.random() * 4 + 1; // 1~5사이의 난수 발생(소수점도 가능)
+                    random[0] = Math.floor(random[0]) * 0.002; // 소수점 삭제하고 0.002 곱함.
+                }
+
+                back[0] = true; // back flag를 true로
+                transX = -0.1 - (bollmove[0] + texcoord[type][0]); // 다시 돌아서 온다.
+
+            }
+            if (bollmove[1] + texcoord[type][1] > 0.3) {
+                if (!back[1]){
+                    random[1] = Math.random() * 4 + 1;
+                    random[1] = Math.floor(random[1]) * 0.002;
+                }
+                back[1] = true;
+                transY = 0.6 - bollmove[1] + texcoord[type][1];
+
+            }
+            /* 다 돌아 와서 다시 벽에 부딪히면 back flag를 끄고 난수 생성 */
+            if (bollmove[0] < -0.6) {
+                back[0] = false;
+                bollmove[0] = 0;
+                random[0] = Math.random() * 4+1;
+                random[0] = Math.floor(random[0]) * 0.002;
+            }
+            if (bollmove[1] > 0.6) {
+                back[1] = false;
+                bollmove[1] = 0;
+                random[1] = Math.random() * 4+1;
+                random[1] = Math.floor(random[1]) * 0.002;
+            }
+            
+            mat4.translate(tex_matrix, tex_matrix, [transX, transY, 0]); // 난수만큼 이동
+        }
+    }
+
+    /* matrix, 단위행렬로 초기화된다.*/
+    var projection_matrix = mat4.create();
+    var view_matrix = mat4.create();
+    var model_matrix = mat4.create();
+    var view_model_matrix = mat4.create();
+    var projection_view_model_matrix = mat4.create();
+    var tex_matrix = mat4.create();
+
+    /* ortho intrinsic parameter */
+    var otr = 1;
+    var otl = -1;
+    var ottp = 1;
+    var otdw = -1;
+    var ztrans = 0;
+
+    /* lookAt extrinsic parameter */
+    var eyeX=0;
+    var eyeY=0;
+
+    var cenX=0;
+    var cenY=0;
+
+    /* Rotate flag */
+    var is_rRotate = false;
+    var is_lRotate = false;
+
+    var rad = 0;
+    var start_angle = -Math.PI / 2; // 시계방향으로 90도 회전, 단위 = radian
+    var delta = 0; // 계속 더해져서 값이 1로 간다.
+    function drawScene() {
+        gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        gl.useProgram(shaderProgram); // shader program 사용
+
+        if (is_rRotate) {
+            rad = delta * start_angle; // delta의 증가에 따라 0에서 -90도에 가까워진다.
+            delta += 0.04;
+        }
+        else if (is_lRotate) { // -90도에서 0도에 가까워진다.
+            rad = (1 - delta) * start_angle;
+            delta += 0.04;
+            
+        }
+        if (delta > 1) {
+            is_rRotate = is_lRotate = false;
+            delta = 0;
+        }
+
+        mat4.ortho(projection_matrix, otl, otr, otdw, ottp, 0, 100); // projection matrix 초기화
+        mat4.lookAt(view_matrix, [eyeX, eyeY, 2], [cenX, cenY, 0], [0, 1, 0]); // view matrix 초기화
+
+        for (var i = 0; i < LAYER_NUM; i++) { // 레이어 개수만큼 반복
+            for (var j = 0; j <= index[0][i]; j++) { // 레이어의 프레임 + back ground 개수만큼 반복 
+                var idx = index[1][i] + j;
+                mat4.identity(model_matrix); // model view를 단위행렬로
+
+                if (is_rRotate) { // 화면의 오른쪽 클릭으로 인한 회전
+                    if (ztrans == 0) ztrans = LAYER_NUM; // 클릭 했는데 마지막에서 처음으로 왔다면
+
+                    if (i < ztrans - 1) mat4.translate(model_matrix, model_matrix, [0.0, 0.0, (-1.0-LAYER_NUM) + ztrans]); // 현재 레이어 전 까지 뒤로 넘김
+                    else if (i == ztrans - 1) { // 현재 레이어를 맨 앞으로 가져와서 회전
+                        mat4.translate(model_matrix, model_matrix, [-1.15, 0.0, 0.0]);
+                        mat4.rotate(model_matrix, model_matrix, rad, [0, 1, 0]);
+                        mat4.translate(model_matrix, model_matrix, [1.15, 0.0, i]); // 맨 앞으로 and 회전의 기준점을 왼쪽 모서리로
+                    }
+                    else mat4.translate(model_matrix, model_matrix, [0, 0, ztrans - 1.0]); // 현재 레이어의 뒤 레이어 부터 앞으로 당김.
+
+                    ztrans = ztrans % LAYER_NUM; // 현재 레이어가 마지막 레이어였다면 회전시키고 다시 0으로
+                }
+                else if (is_lRotate) { // 화면의 왼쪽 클릭으로 인한 회전
+                    if (i < ztrans) mat4.translate(model_matrix, model_matrix, [0, 0, -LAYER_NUM + ztrans]); // 이전 레이어의 전 레이어들을 뒤로 넘김
+                    else if (i == ztrans) { // 이전 레이어를 맨 앞으로 가져와서 회전
+                        mat4.translate(model_matrix, model_matrix, [-1.15, 0.0, 0.0]);
+                        mat4.rotate(model_matrix, model_matrix, rad, [0, 1, 0]);
+                        mat4.translate(model_matrix, model_matrix, [1.15, 0.0, i]);
+                    }
+                    else if (ztrans < i)
+                        mat4.translate(model_matrix, model_matrix, [0, 0, ztrans]); // 이전 레이어의 뒤 레이어들을 앞으로 당김
+                }
+                else { // 회전이 없을 때
+                    if (i < ztrans)
+                        mat4.translate(model_matrix, model_matrix, [0, 0, ztrans - LAYER_NUM]); // ztrans 이전 레이어는 뒤로
+                    else {
+                        mat4.translate(model_matrix, model_matrix, [0, 0, ztrans]); // 나머지는 앞으로 당김
+
+                        mat4.identity(tex_matrix); // matrix를 단위 행렬로.
+                        // mat4.scale(tex_matrix, tex_matrix, [2, 1, 0]);
+                        if (i == ztrans && index[0][i] != j) // texture transformation.
+                            textureTransform(idx);
+                    }
+                }
+
+                /* projection-view-model matrix를 만듦 */
+                mat4.multiply(view_model_matrix, view_matrix, model_matrix);
+                mat4.multiply(projection_view_model_matrix, projection_matrix, view_model_matrix);
+
+                /* 버퍼를 서버로 보냄 */
+                if (j == index[0][i]) gl.bindBuffer(gl.ARRAY_BUFFER, backBuffer[i]);
+                else                  gl.bindBuffer(gl.ARRAY_BUFFER, frameBuffer[idx]);
+                gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, 3, gl.FLOAT, false, 0, 0);
+
+                if (j == index[0][i]) gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer[0]);
+                else gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer[idx]);
+                gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, 2, gl.FLOAT, false, 0, 0);
+
+                gl.activeTexture(gl.TEXTURE0); // 0번 texture를 사용
+
+                if (j == index[0][i]) gl.bindTexture(gl.TEXTURE_2D, back_texture);
+                else                  gl.bindTexture(gl.TEXTURE_2D, texture_id[idx]);
+                gl.uniform1i(shaderProgram.texid_loc, 0); // texid = 0으로?
+
+                gl.uniformMatrix4fv(shaderProgram.mvp_matrix_loc, false, projection_view_model_matrix); // vertex-shader에 mvp_matrix에 projection_view_model matrix를 assignment
+                gl.uniformMatrix4fv(texture_matrix_loc, false, tex_matrix); // vertex-shader에 texture_matrix에 tex_matrix를 assignment
+
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+                gl.drawElements(gl.TRIANGLES, indexBuffer.numItems, gl.UNSIGNED_SHORT, 0); // frame or background draw
+            }
+        }
+        gl.useProgram(null);
+    }
+    function initData() { // 데이터들 초기화
+        is_lRotate = is_rRotate = false;
+        delta = 0;
+
+        ottp = otr = 1;
+        otdw = otl = -1;
+        eyeX = eyeY = cenX = cenY = 0;
+        bollmove[0] = bollmove[1] = 0;;
+        
+        for(var i=0; i<FRAME_NUM; i++){
+            move[i] = 0;
+        }
+    }
+    var startX; // 드래그의 X의 기준 값
+    var startY; // 드래그의 Y의 기준 값
+    var ondrag = false; // 드래그의 상태
+    function handleMouseDown(event) {
+        //console.log("handleMouseDown event.clientX: " + event.clientX + " event.clientY: " + event.clientY);
+        
+        /* 화면 오른쪽 가운데 사각형의 범위에 마우스 클릭이 있었을 경우 */
+        if (event.clientX >= 450 && event.clientY >= 100 && event.clientY <=400 && !zoom && !ondrag) {
+            ztrans += 1.0;
+            if (ztrans >= LAYER_NUM)
+                ztrans = 0;
+
+            initData();
+            is_rRotate = true;
+        }
+
+        /* 화면 왼쪽 가운데 사각형의 범위에 마우스 클릭이 있었을 경우 */
+        else if (event.clientX <= 50 && event.clientY >= 100 && event.clientY <= 400 && !zoom && !ondrag) {
+            ztrans -= 1.0;
+            if (ztrans < 0)
+                ztrans = LAYER_NUM-1;
+
+            initData();
+            is_lRotate = true;
+        }
+        /* 나머지 화면을 클릭했을 때 */
+        else {
+            startX = event.clientX; // 드래그의 초기 X값 설정
+            startY = event.clientY; // 드래그의 초기 Y값 설정
+            ondrag = true; // on drag
+        }
+    }
+
+    function handleMouseUp(event) {
+        //console.log("handleMouseUp event.clientX: " + event.clientX + " event.clientY: " + event.clientY);
+        ondrag = false; // 마우스를 클릭했다가 띠었을 때 drag 끝.
+    }
+
+    function boundary() {
+        if (eyeX + otr > 1) eyeX = cenX += 1 - (eyeX + otr);
+        if (eyeX + otl < -1) eyeX = cenX += -1 - (eyeX + otl);
+        if (eyeY + ottp > 1) eyeY = cenY += 1 - (eyeY + ottp);
+        if (eyeY + otdw < -1) eyeY = cenY += -1 - (eyeY + otdw);
+    }
+
+    function handleMouseMove(event) {
+        //console.log("handleMouseMove event.clientX: " + event.clientX + " event.clientY: " + event.clientY);
+        
+        if (ondrag) {
+            /* 드래그 한 만큼 lookAt 이동 */
+            eyeX = cenX += (startX - event.clientX) / 500;
+            eyeY = cenY -= (startY - event.clientY) / 500;
+
+            /* 이동 한 마우스 위치를 다시 기준점으로 */
+            startX = event.clientX;
+            startY = event.clientY;
+
+            /* 화면 바깥으로 나가지 않도록 함 */
+            boundary();
+        }
+    }
+
+    var zoom = false;
+    function handleMouseWheel(event) {
+        //console.log("handleMouseWheel event.delta: " + event.wheelDelta/120);
+        var delta = event.wheelDelta / 120;
+
+        zoom = true;
+        if (delta < 0) { // 휠을 위로 돌릴 경우 확대
+            ottp = otr *= 1.05;
+            otl = otdw *= 1.05;
+        }
+        else { // 아래로 돌릴경우 축소
+            ottp = otr *= 0.95;
+            otl = otdw *= 0.95;
+            
+            if (otr <= 0.4) { // 화면의 크기가 40% 보다 작아지지 않는다.
+                otr = ottp = 0.4;
+                otl = otdw = -0.4;
+            }
+        }
+
+        /* 확대 축소시 화면 바깥으로 나가지 않도록 조절 */
+        /* 조절은 extrinsic parameter로 조절한다. */
+        if (ottp - otdw > 2) {
+            eyeY = cenY = 0;
+            ottp = 1;
+            otdw = -1;
+        }
+        if (otr - otl > 2) {
+            eyeX = cenX = 0;
+            otr = 1;
+            otl = -1;
+        }
+       
+        boundary();
+
+        if(otr==1 && ottp==1 && otl==-1 && otdw==-1)
+            zoom = false;
+    }
+
+    function handleKeyDown(event) {
+        if(String.fromCharCode(event.keyCode) == "Z") {
+            initData();
+            zoom = drag = false;
+        }
+        else if(String.fromCharCode(event.keyCode) == "H")
+        {
+            alert("go to home page");
+            initData();
+            zoom = ondrag = false;
+            ztrans=0;
+        }
+        else if(String.fromCharCode(event.keyCode) == "E")
+        {
+            alert("go to end page");
+            initData();
+            zoom = ondrag = false;
+            ztrans=5;
+        }
+    }
+
+    function tick() {
+        requestAnimFrame(tick); // tick을 계속 실행
+        drawScene();
+    }
+
+    function webGLStart() {
+        var canvas = document.getElementById("webGL_example");
+        initGL(canvas); // canvas 초기화?
+
+        initShaders(); // shader 생성 및 컴파일, 연결, 프로그램 생성
+        initBuffers(); // 버퍼 초기화. 데이터를 올림
+        initTexture(); // 텍스쳐 초기화
+
+        gl.clearColor(0.0, 0.0, 0.0, 1.0); // 바탕을 검은색으로
+        gl.enable(gl.DEPTH_TEST); // DEPTH를 사용 함
+        gl.enable(gl.CULL_FACE);  // 보이지 않는 것은 그리지 않음
+
+        tick(); 
+        //requestAnimFrame(drawScene);
+    } </script>
+</head>
+<body onload="webGLStart();">
+    <canvas id="webGL_example" style="border: none;" width="500" height="500"></canvas>
+</body>
+</html>
